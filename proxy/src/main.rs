@@ -14,9 +14,10 @@ async fn main() -> Result<()> {
     loop {
         let (socket, _addr) = listener.accept().await?;
 
-        if let Err(e) = handle_connection(socket).await {
-            eprintln!("Error handling connection: {}", e)
-        }
+        tokio::spawn(async move {
+            if let Err(e) = handle_connection(socket).await {
+                eprintln!("Error client handling: {}", e)
+            }
+        });
     }
 }
-
