@@ -1,5 +1,7 @@
-use std::sync::Arc;
+use std::collections::HashMap;
+use std::net::IpAddr;
 use std::sync::atomic::{AtomicUsize, Ordering};
+use std::sync::{Arc, Mutex};
 use tokio::io::Result;
 use tokio::{
     io::{AsyncReadExt, AsyncWriteExt},
@@ -12,27 +14,44 @@ pub async fn handle_connection(
     mut client_socket: TcpStream,
     backends: Arc<Vec<Backend>>,
     counter: Arc<AtomicUsize>,
-    rate_limit_counter: Arc<AtomicUsize>,
+    rate_limit_counter: Arc<Mutex<HashMap<IpAddr, usize>>>,
 ) -> Result<()> {
-    let current_req_cont = rate_limit_counter.fetch_add(1, Ordering::SeqCst);
+    let client_ip = match client_socket.peer_addr() {
+        Ok(addr) => addr.ip(),
+        Err(_) => {
+            return Ok(());
+        }
+    };
 
-    if current_req_cont >= 5 {
-        println!(
-            "⚠️ Limit exceeded! Current requests per second: {}",
-            current_req_cont + 1
-        );
+    println!("client_ip: {}", client_ip);
 
+    let mut is_blocked = false;
+
+    {
+        let mut map = rate_limit_counter.lock().unwrap();
+        let current_req_count = map.entry(client_ip).or_insert(0);
+
+        if *current_req_count >= 5 {
+            println!(
+                "⚠️ Limit exceeded! Current requests per second: {}",
+                *current_req_count + 1
+            );
+            is_blocked = true;
+        } else {
+            *current_req_count += 1;
+        }
+    }
+
+    if is_blocked {
         let response = "HTTP/1.1 429 Too Many Requests\r\n\
-    Connection: close\r\n\
-    Content-Type: text/plain; charset=utf-8\r\n\
-    Content-Length: 37\r\n\
-    \r\n\
-    Too Many Requests. Please slow down.\n";
+Connection: close\r\n\
+Content-Type: text/plain; charset=utf-8\r\n\
+Content-Length: 37\r\n\
+\r\n\
+Too Many Requests. Please slow down.\n";
 
         client_socket.write_all(response.as_bytes()).await?;
-
         client_socket.shutdown().await?;
-
         return Ok(());
     }
 

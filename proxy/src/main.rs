@@ -1,7 +1,8 @@
 use std::{
+    collections::HashMap,
     io::Result,
     sync::{
-        Arc,
+        Arc, Mutex,
         atomic::{AtomicBool, AtomicUsize},
     },
 };
@@ -38,7 +39,7 @@ async fn main() -> Result<()> {
     let backends = Arc::new(backends);
 
     let counter = Arc::new(AtomicUsize::new(0));
-    let rate_limit_counter = Arc::new(AtomicUsize::new(0));
+    let rate_limit_counter = Arc::new(Mutex::new(HashMap::new()));
 
     start_rate_limiter_reset(Arc::clone(&rate_limit_counter), 10);
 
