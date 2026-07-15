@@ -1,18 +1,46 @@
 use std::sync::Arc;
 use std::sync::atomic::{AtomicUsize, Ordering};
-use tokio::{io::{AsyncReadExt, AsyncWriteExt}, net::TcpStream};
 use tokio::io::Result;
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::TcpStream,
+};
 
 use crate::models::Backend;
 
 pub async fn handle_connection(
-    mut client_socket: TcpStream, 
-    backends: Arc<Vec<Backend>>, 
-    counter: Arc<AtomicUsize>
+    mut client_socket: TcpStream,
+    backends: Arc<Vec<Backend>>,
+    counter: Arc<AtomicUsize>,
+    rate_limit_counter: Arc<AtomicUsize>,
 ) -> Result<()> {
+    let current_req_cont = rate_limit_counter.fetch_add(1, Ordering::SeqCst);
+
+    if current_req_cont >= 5 {
+        println!(
+            "⚠️ Limit exceeded! Current requests per second: {}",
+            current_req_cont + 1
+        );
+
+        let response = "HTTP/1.1 429 Too Many Requests\r\n\
+    Connection: close\r\n\
+    Content-Type: text/plain; charset=utf-8\r\n\
+    Content-Length: 37\r\n\
+    \r\n\
+    Too Many Requests. Please slow down.\n";
+
+        client_socket.write_all(response.as_bytes()).await?;
+
+        client_socket.shutdown().await?;
+
+        return Ok(());
+    }
+
     let mut client_buf = [0; 1024];
     let n = client_socket.read(&mut client_buf).await?;
-    if n == 0 { return Ok(()) }
+    if n == 0 {
+        return Ok(());
+    }
 
     let current_count = counter.fetch_add(1, Ordering::SeqCst);
     let num_backends = backends.len();
@@ -22,7 +50,7 @@ pub async fn handle_connection(
     for i in 0..num_backends {
         let check_index = (start_index + i) % num_backends;
         let backend = &backends[check_index];
-        
+
         if backend.is_alive.load(Ordering::SeqCst) {
             selected_backend = Some(backend);
             break;
@@ -32,7 +60,9 @@ pub async fn handle_connection(
     let backend = match selected_backend {
         Some(b) => b,
         None => {
-            let _ = client_socket.write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\nAll backends down").await;
+            let _ = client_socket
+                .write_all(b"HTTP/1.1 502 Bad Gateway\r\n\r\nAll backends down")
+                .await;
             return Ok(());
         }
     };
@@ -43,7 +73,9 @@ pub async fn handle_connection(
     let mut backend_buf = [0; 4096];
     loop {
         let bytes_read = backend_socket.read(&mut backend_buf).await?;
-        if bytes_read == 0 { break; }
+        if bytes_read == 0 {
+            break;
+        }
         client_socket.write_all(&backend_buf[..bytes_read]).await?;
     }
 
